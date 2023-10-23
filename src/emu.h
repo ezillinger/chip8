@@ -31,10 +31,16 @@ class Emu {
     void tick(KeypadInput keysDown);
     const Display& getDisplay() { return m_display; }
 
-  private:
-    using OpCode = uint16_t;
-    OpCode fetch();
+    void setPause(bool p) { m_pause = p; }
+    bool isPaused() const { return m_pause; }
 
+  private:
+
+    using OpCode = uint16_t;
+    void runOneInstruction(KeypadInput keysDown);
+    OpCode fetchInstruction();
+
+    bool m_pause = false;
     // if this exists we're waiting for a keypress, to be stored in vx
     std::optional<uint8_t> m_waitingForKeypressRegIdx;
 
@@ -49,7 +55,9 @@ class Emu {
     std::array<uint8_t, MEM_SIZE_BYTES> m_memory{};
     std::vector<uint16_t> m_stack{};
 
-    chrono::steady_clock::time_point m_timerStart = chrono::steady_clock::now();
+    chrono::steady_clock::time_point m_lastTickTime = chrono::steady_clock::now();
+    chrono::nanoseconds m_timeElapsedSinceLastTimerTick = 0ns;
+    chrono::nanoseconds m_timeElapsedSinceLastInstruction = 0ns;
 
     Display m_display{};
 };

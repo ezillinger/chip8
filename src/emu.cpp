@@ -2,37 +2,37 @@
 
 namespace ez {
 
-    static const std::array<uint8_t, 0x80> font = {
-        0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
-        0x20, 0x60, 0x20, 0x20, 0x70, // 1
-        0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
-        0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
-        0x90, 0x90, 0xF0, 0x10, 0x10, // 4
-        0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
-        0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
-        0xF0, 0x10, 0x20, 0x40, 0x40, // 7
-        0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
-        0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
-        0xF0, 0x90, 0xF0, 0x90, 0x90, // A
-        0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
-        0xF0, 0x80, 0x80, 0x80, 0xF0, // C
-        0xE0, 0x90, 0x90, 0x90, 0xE0, // D
-        0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
-        0xF0, 0x80, 0xF0, 0x80, 0x80  // F
-    };
-    static const int BYTES_PER_FONT_GLYPH = 5;
+static const std::array<uint8_t, 0x80> font = {
+    0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+    0x20, 0x60, 0x20, 0x20, 0x70, // 1
+    0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+    0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+    0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+    0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+    0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+    0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+    0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+    0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+    0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+    0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+    0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+    0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+    0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+    0xF0, 0x80, 0xF0, 0x80, 0x80  // F
+};
+static const int BYTES_PER_FONT_GLYPH = 5;
 
-    Emu::Emu(const uint8_t* program, size_t size) {
+Emu::Emu(const uint8_t* program, size_t size) {
 
-        memcpy(m_memory.data(), font.data(), font.size());
+    memcpy(m_memory.data(), font.data(), font.size());
 
-        const auto programStart = 0x200;
-        assert(size < MEM_SIZE_BYTES - programStart);
-        memcpy(m_memory.data() + programStart, program, size);
-        m_pc = programStart;
+    const auto programStart = 0x200;
+    assert(size < MEM_SIZE_BYTES - programStart);
+    memcpy(m_memory.data() + programStart, program, size);
+    m_pc = programStart;
 }
 
-Emu::OpCode Emu::fetch() {
+Emu::OpCode Emu::fetchInstruction() {
     auto bytes = (m_memory.data() + m_pc);
     uint16_t code = (bytes[0] << 8) | bytes[1];
     m_pc += 2;
@@ -42,21 +42,39 @@ Emu::OpCode Emu::fetch() {
 
 void Emu::tick(KeypadInput keysDown) {
 
-    static constexpr chrono::nanoseconds timerDuration = chrono::duration_cast<chrono::nanoseconds>(16.66666ms);
     const auto now = chrono::steady_clock::now();
-    while ((now - m_timerStart) > timerDuration) {
-        m_timerStart += timerDuration;
-        if(m_delayTimer > 0){
+    if (m_pause) {
+        m_lastTickTime = now;
+        return;
+    }
+
+    constexpr auto timerDuration = chrono::duration_cast<chrono::nanoseconds>(16.66666ms); // 60 hz
+    constexpr auto instructionDuration = chrono::duration_cast<chrono::nanoseconds>(2ms);        // 500 hz
+
+    m_timeElapsedSinceLastTimerTick += now - m_lastTickTime;
+    while (m_timeElapsedSinceLastTimerTick > timerDuration) {
+        m_timeElapsedSinceLastTimerTick -= timerDuration;
+        if (m_delayTimer > 0) {
             --m_delayTimer;
         }
-        if(m_soundTimer > 0){
+        if (m_soundTimer > 0) {
             --m_soundTimer;
         }
     }
 
-    if(m_waitingForKeypressRegIdx){
-        for(int i = 0; i < 16; ++i){
-            if(0 != (keysDown & (0b1 << i))){
+    m_timeElapsedSinceLastInstruction += now - m_lastTickTime;
+    while (m_timeElapsedSinceLastInstruction > instructionDuration) {
+        m_timeElapsedSinceLastInstruction -= instructionDuration;
+        runOneInstruction(keysDown);
+    }
+}
+
+void Emu::runOneInstruction(KeypadInput keysDown) {
+
+    // if we're in keypress mode we don't run any commands until a key is pressed
+    if (m_waitingForKeypressRegIdx) {
+        for (int i = 0; i < 16; ++i) {
+            if (0 != (keysDown & (0b1 << i))) {
                 m_regV[*m_waitingForKeypressRegIdx] = i;
                 m_waitingForKeypressRegIdx = {};
                 return;
@@ -65,7 +83,7 @@ void Emu::tick(KeypadInput keysDown) {
         return;
     }
 
-    const auto opCode = fetch();
+    const auto opCode = fetchInstruction();
     const auto lowByte = 0xFF & opCode;
     const auto nib3 = (0xF000 & opCode) >> 12;
     const auto nib2 = (0x0F00 & opCode) >> 8;
@@ -76,7 +94,7 @@ void Emu::tick(KeypadInput keysDown) {
     const auto vy = m_regV[nib1];
     auto& flags = m_regV[0xF];
 
-    log_info("Opcode {:x}", opCode);
+    // log_info("Opcode {:x}", opCode);
 
     switch (nib3) {
     case 0x0: {
@@ -210,13 +228,13 @@ void Emu::tick(KeypadInput keysDown) {
     case 0xE: // keyboard input
         if ((lowByte) == 0x9E) {
             // skip vx _x__
-            if (((keysDown && 0b1) << vx) != 0) {
+            if ((keysDown & (0b1 << vx)) != 0) {
                 m_pc += 2;
             }
         } else {
             // skipn vx _x__
             assert((lowByte) == 0xA1);
-            if (((keysDown && 0b1) << vx) == 0) {
+            if ((keysDown & (0b1 << vx)) == 0) {
                 m_pc += 2;
             }
         }
@@ -246,13 +264,13 @@ void Emu::tick(KeypadInput keysDown) {
             m_memory[m_regI + 1] = vx / 10;
             m_memory[m_regI + 2] = vx % 10;
             break;
-        case 0x55: // ld [I] vx
-            for(auto i = 0; i <= vx; ++i){
+        case 0x55: // ld [I] vx _n__
+            for (auto i = 0; i <= nib2; ++i) {
                 m_memory[m_regI + i] = m_regV[i];
             }
             break;
-        case 0x65: // ld vx [I]
-            for(auto i = 0; i <= vx; ++i){
+        case 0x65: // ld vx [I] _n__
+            for (auto i = 0; i <= nib2; ++i) {
                 m_regV[i] = m_memory[m_regI + i];
             }
             break;
