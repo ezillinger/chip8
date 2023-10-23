@@ -1,78 +1,121 @@
 #include "base.h"
-
-#include "cpu.h"
-#include <iostream>
+#include "emu.h"
 #include <fstream>
-
+#include <iostream>
 #include <SDL.h>
 
-void sdl_assert(int rc) {
-    if(rc){
-        ez::log_error("SDL Error: {}", SDL_GetError());
-        assert(0);
+static void sdl_assert(int rc) {
+    if (rc) {
+        ez::fail("SDL Error: {}", SDL_GetError());
     }
 }
 
-int main(int, char **)
-{
+static ez::KeypadInput get_keys() { 
+    ez::KeypadInput keysDown = 0;
+    const auto keystate = SDL_GetKeyboardState(nullptr);
+    const auto isKeyDown = [&keystate](SDL_KeyCode keycode) {
+        return static_cast<bool>(keystate[SDL_GetScancodeFromKey(keycode)]);
+    };
+    keysDown &= isKeyDown(SDLK_x) ? 0b1 << 0x0 : 0;
+    keysDown &= isKeyDown(SDLK_1) ? 0b1 << 0x1 : 0;
+    keysDown &= isKeyDown(SDLK_2) ? 0b1 << 0x2 : 0;
+    keysDown &= isKeyDown(SDLK_3) ? 0b1 << 0x3 : 0;
+    keysDown &= isKeyDown(SDLK_q) ? 0b1 << 0x4 : 0;
+    keysDown &= isKeyDown(SDLK_w) ? 0b1 << 0x5 : 0;
+    keysDown &= isKeyDown(SDLK_e) ? 0b1 << 0x6 : 0;
+    keysDown &= isKeyDown(SDLK_a) ? 0b1 << 0x7 : 0;
+    keysDown &= isKeyDown(SDLK_s) ? 0b1 << 0x8 : 0;
+    keysDown &= isKeyDown(SDLK_d) ? 0b1 << 0x9 : 0;
+    keysDown &= isKeyDown(SDLK_z) ? 0b1 << 0xA : 0;
+    keysDown &= isKeyDown(SDLK_c) ? 0b1 << 0xB : 0;
+    keysDown &= isKeyDown(SDLK_4) ? 0b1 << 0xC : 0;
+    keysDown &= isKeyDown(SDLK_r) ? 0b1 << 0xD : 0;
+    keysDown &= isKeyDown(SDLK_f) ? 0b1 << 0xE : 0;
+    keysDown &= isKeyDown(SDLK_v) ? 0b1 << 0xF : 0;
+    return keysDown;
+}
+
+int main(int, char**) {
 
     using namespace ez;
 
-    const auto romPath = "./roms/1-chip8-logo.ch8";
-    //const auto romPath = "./roms/2-ibm-logo.ch8";
+    size_t romIdx = 0;
+    std::vector<std::filesystem::path> roms;
+    for(const auto& file : std::filesystem::directory_iterator("./roms")){
+        const auto& path = file.path();
+        if (path.extension() == ".ch8") {
+            log_info("Found rom: {}", path.c_str());
+            roms.push_back(path);
+        }
+    }
+    std::sort(roms.begin(), roms.end());
+    assert(roms.size() > 0);
 
-    log_info("CWD {}", std::filesystem::current_path().c_str());
-    assert(std::filesystem::exists(romPath));
-    const auto romSize = std::filesystem::file_size(romPath);
-    auto is = std::ifstream(romPath, std::ios::binary);
-    auto rom = std::vector<uint8_t>(romSize);
-    is.read(reinterpret_cast<char *>(rom.data()), romSize);
+    const auto loadRom = [&](const std::filesystem::path& romPath) {
+        log_info("Loading rom {}", romPath.c_str());
+        const auto romSize = std::filesystem::file_size(romPath);
+        auto is = std::ifstream(romPath, std::ios::binary);
+        auto rom = std::vector<uint8_t>(romSize);
+        is.read(reinterpret_cast<char*>(rom.data()), romSize);
 
-    auto cpu = Cpu(rom.data(), rom.size());
+        return Emu(rom.data(), rom.size());
+    };
 
-    assert(0 == SDL_Init(SDL_INIT_EVERYTHING));
-    // ain't nobody got time to destroy these, that's what my OS is for
-    auto window = SDL_CreateWindow("Chip8 Emulator", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1000, 500, SDL_WINDOW_RESIZABLE);
+    auto emu = loadRom(roms.front());
+
+    sdl_assert(SDL_Init(SDL_INIT_EVERYTHING));
+    // todo, raii
+    auto window = SDL_CreateWindow("Chip8 Emulator", SDL_WINDOWPOS_CENTERED,
+                                   SDL_WINDOWPOS_CENTERED, 1000, 500,
+                                   SDL_WINDOW_RESIZABLE);
     auto renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    auto texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, Display::WIDTH_PX, Display::HEIGHT_PX);
-    if(!texture){
+    // SDL_PIXELFORMAT_RGB888 is 4 bytes per pixel - alpha is always 255
+    const auto bytesPerPx = 4;
+    auto texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB888,
+                                     SDL_TEXTUREACCESS_STREAMING,
+                                     Display::WIDTH_PX, Display::HEIGHT_PX);
+    if (!texture) {
         log_error("{}", SDL_GetError());
     }
 
     auto event = SDL_Event{};
     bool shouldExit = false;
-    while (!shouldExit)
-    {
-        while (SDL_PollEvent(&event))
-        {
-            switch (event.type)
-            {
+    while (!shouldExit) {
+
+        while (SDL_PollEvent(&event)) {
+            switch (event.type) {
             case SDL_QUIT:
                 shouldExit = true;
                 break;
-
+            case SDL_KEYDOWN:
+                // the only key we care about keydown events is tab
+                // keypad for emulator is polled
+                if(event.key.keysym.sym == SDLK_TAB){
+                    romIdx = (romIdx + 1) % roms.size();
+                    emu = loadRom(roms[romIdx]);
+                }
+                break;
             default:
                 break;
             }
         }
-        cpu.tick();
+
+        const auto keysDown = get_keys();
+        emu.tick(keysDown);
 
         sdl_assert(SDL_RenderClear(renderer));
-        uint8_t *pixels = nullptr;
+        uint8_t* pixels = nullptr;
         int pitch = 0;
-        sdl_assert(SDL_LockTexture(texture, nullptr, reinterpret_cast<void **>(&pixels), &pitch));
+        sdl_assert(SDL_LockTexture(texture, nullptr,
+                                   reinterpret_cast<void**>(&pixels), &pitch));
         memset(pixels, 0, pitch * Display::HEIGHT_PX);
-        const auto bytesPerPx = 4;
-        const auto srcPixels = cpu.getDisplay().data();
-        for (int y = 0; y < Display::HEIGHT_PX; ++y)
-        {
+        const auto srcPixels = emu.getDisplay().data();
+        for (auto y = 0; y < Display::HEIGHT_PX; ++y) {
             const auto dstRowPtr = pixels + (y * pitch);
-            const auto srcRowPtr =  srcPixels + (y * Display::WIDTH_PX);
-            for (int x = 0; x < Display::WIDTH_PX; ++x)
-            {
+            const auto srcRowPtr = srcPixels + (y * Display::WIDTH_PX);
+            for (auto x = 0; x < Display::WIDTH_PX; ++x) {
                 const auto dstPtr = dstRowPtr + (bytesPerPx * x);
-                for (int px = 0; px < bytesPerPx; ++px)
-                {
+                for (auto px = 0; px < bytesPerPx; ++px) {
                     dstPtr[px] = srcRowPtr[x];
                 }
             }
@@ -82,5 +125,8 @@ int main(int, char **)
         sdl_assert(SDL_RenderCopy(renderer, texture, nullptr, nullptr));
         SDL_RenderPresent(renderer);
     }
+    SDL_DestroyTexture(texture);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
     log_info("Goodbye");
 }
