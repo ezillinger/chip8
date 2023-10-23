@@ -43,39 +43,40 @@ Emu::OpCode Emu::fetchInstruction() {
 void Emu::tick(KeypadInput keysDown) {
 
     const auto now = chrono::steady_clock::now();
-    if (m_pause) {
-        m_lastTickTime = now;
-        return;
-    }
+    if (!m_pause) {
 
-    constexpr auto timerDuration = chrono::duration_cast<chrono::nanoseconds>(16.66666ms); // 60 hz
-    constexpr auto instructionDuration = chrono::duration_cast<chrono::nanoseconds>(2ms);        // 500 hz
+        constexpr auto timerDuration = chrono::duration_cast<chrono::nanoseconds>(16.66666ms); // 60 hz
+        constexpr auto instructionDuration = chrono::duration_cast<chrono::nanoseconds>(2ms);        // 500 hz
 
-    m_timeElapsedSinceLastTimerTick += now - m_lastTickTime;
-    while (m_timeElapsedSinceLastTimerTick > timerDuration) {
-        m_timeElapsedSinceLastTimerTick -= timerDuration;
-        if (m_delayTimer > 0) {
-            --m_delayTimer;
+        m_timeElapsedSinceLastTimerTick += now - m_lastTickTime;
+        while (m_timeElapsedSinceLastTimerTick > timerDuration) {
+            m_timeElapsedSinceLastTimerTick -= timerDuration;
+            if (m_delayTimer > 0) {
+                --m_delayTimer;
+            }
+            if (m_soundTimer > 0) {
+                --m_soundTimer;
+            }
         }
-        if (m_soundTimer > 0) {
-            --m_soundTimer;
+
+        m_timeElapsedSinceLastInstruction += now - m_lastTickTime;
+        while (m_timeElapsedSinceLastInstruction > instructionDuration) {
+            m_timeElapsedSinceLastInstruction -= instructionDuration;
+            runOneInstruction(keysDown);
         }
     }
-
-    m_timeElapsedSinceLastInstruction += now - m_lastTickTime;
-    while (m_timeElapsedSinceLastInstruction > instructionDuration) {
-        m_timeElapsedSinceLastInstruction -= instructionDuration;
-        runOneInstruction(keysDown);
-    }
+    m_lastTickTime = now;
 }
 
 void Emu::runOneInstruction(KeypadInput keysDown) {
 
     // if we're in keypress mode we don't run any commands until a key is pressed
     if (m_waitingForKeypressRegIdx) {
+        m_waitingForKeypressRegIdx->m_keysDownLastTick |= keysDown;
         for (int i = 0; i < 16; ++i) {
-            if (0 != (keysDown & (0b1 << i))) {
-                m_regV[*m_waitingForKeypressRegIdx] = i;
+            // only fires on key-up
+            if (m_waitingForKeypressRegIdx->m_keysDownLastTick ^ keysDown) {
+                m_regV[m_waitingForKeypressRegIdx->m_regIdx] = i;
                 m_waitingForKeypressRegIdx = {};
                 return;
             }
@@ -148,12 +149,15 @@ void Emu::runOneInstruction(KeypadInput keysDown) {
             break;
         case 0x1: // or vx vy
             vx = vy | vx;
+            flags = 0;
             break;
         case 0x2: // and vx vy
             vx = vy & vx;
+            flags = 0;
             break;
         case 0x3: // xor vx vy
             vx = vy ^ vx;
+            flags = 0;
             break;
         case 0x4: // add vx vy
         {
@@ -171,6 +175,9 @@ void Emu::runOneInstruction(KeypadInput keysDown) {
         }
         case 0x6: // shr vx vy
         {
+            if(m_legacyShift){
+                vx = vy;
+            }
             bool vxOdd = 0b1 & vx;
             vx = vx >> 1;
             flags = vxOdd ? 1 : 0;
@@ -183,7 +190,10 @@ void Emu::runOneInstruction(KeypadInput keysDown) {
             flags = borrow ? 0 : 1;
             break;
         }
-        case 0xE: {
+        case 0xE: { // shl vx vy
+            if(m_legacyShift){
+                vx = vy;
+            }
             bool vxHighBitSet = 0b1000'0000 & vx;
             vx = vx << 1;
             flags = vxHighBitSet ? 1 : 0;
@@ -204,7 +214,12 @@ void Emu::runOneInstruction(KeypadInput keysDown) {
         m_regI = 0x0FFF & opCode;
         break;
     case 0xB: // jmp v0 + _NNN
-        m_pc = m_regV[0] + (0x0FFF & opCode);
+        if(m_legacyJump){
+            m_pc = m_regV[0] + (0x0FFF & opCode);
+        }
+        else{
+            m_pc = vx + (0x00FF & opCode);
+        }
         break;
     case 0xC: // rand vx AND kk _xkk
         vx = rand() & lowByte;
@@ -222,7 +237,6 @@ void Emu::runOneInstruction(KeypadInput keysDown) {
             }
         }
         flags = erasedPixel ? 1 : 0;
-        // m_display.dump();
         break;
     }
     case 0xE: // keyboard input
@@ -245,7 +259,7 @@ void Emu::runOneInstruction(KeypadInput keysDown) {
             vx = m_delayTimer;
             break;
         case 0x0A: // wait for any keypress, store in vx
-            m_waitingForKeypressRegIdx = nib2;
+            m_waitingForKeypressRegIdx = KeyWaitInfo{uint8_t(nib2), 0};
             break;
         case 0x15: // ld dt vx
             m_delayTimer = vx;
@@ -261,17 +275,23 @@ void Emu::runOneInstruction(KeypadInput keysDown) {
             break;
         case 0x33: // ld B vx - set I - I + 2 to decimal representation of vx
             m_memory[m_regI] = vx / 100;
-            m_memory[m_regI + 1] = vx / 10;
+            m_memory[m_regI + 1] = (vx / 10) % 10;
             m_memory[m_regI + 2] = vx % 10;
             break;
         case 0x55: // ld [I] vx _n__
             for (auto i = 0; i <= nib2; ++i) {
                 m_memory[m_regI + i] = m_regV[i];
             }
+            if(m_legacyMemoryIncrement){
+                m_regI += nib2 + 1;
+            }
             break;
         case 0x65: // ld vx [I] _n__
             for (auto i = 0; i <= nib2; ++i) {
                 m_regV[i] = m_memory[m_regI + i];
+            }
+            if(m_legacyMemoryIncrement){
+                m_regI += nib2 + 1;
             }
             break;
         default:

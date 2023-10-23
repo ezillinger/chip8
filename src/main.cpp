@@ -3,6 +3,7 @@
 #include <SDL.h>
 #include <fstream>
 #include <iostream>
+#include "audio.h"
 
 namespace ez {
 
@@ -33,9 +34,6 @@ static KeypadInput get_keys() {
     keysDown |= isKeyDown(SDLK_r) ? 0b1 << 0xD : 0;
     keysDown |= isKeyDown(SDLK_f) ? 0b1 << 0xE : 0;
     keysDown |= isKeyDown(SDLK_v) ? 0b1 << 0xF : 0;
-    if (keysDown) {
-        log_info("Keypad {}", keysDown);
-    }
     return keysDown;
 }
 
@@ -44,7 +42,7 @@ static void runApplication() {
     std::vector<std::filesystem::path> roms;
     for (const auto& file : std::filesystem::directory_iterator("./roms")) {
         const auto& path = file.path();
-        if (path.extension() == ".ch8") {
+        if (path.extension() == ".ch8" || path.extension() == ".rom" ) {
             log_info("Found rom: {}", path.c_str());
             roms.push_back(path);
         }
@@ -74,6 +72,8 @@ static void runApplication() {
     // SDL_PIXELFORMAT_RGB888 is 4 bytes per pixel - alpha is always 255
     const auto bytesPerPx = 4;
     auto texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_RGB888, SDL_TEXTUREACCESS_STREAMING, Display::WIDTH_PX, Display::HEIGHT_PX);
+    auto synth = Audio();
+
     if (!texture) {
         log_error("{}", SDL_GetError());
     }
@@ -112,6 +112,7 @@ static void runApplication() {
 
         const auto keysDown = get_keys();
         emu.tick(keysDown);
+        synth.setPause(!emu.shouldPlaySound());
         if (singleStep) {
             emu.setPause(true);
             paused = true;

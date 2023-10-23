@@ -7,6 +7,7 @@ add_executable(chip8
                src/main.cpp
                src/base.cpp
                src/emu.cpp
+               src/audio.cpp
               )
 
 target_compile_options(chip8 PRIVATE

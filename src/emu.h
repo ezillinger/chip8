@@ -34,6 +34,8 @@ class Emu {
     void setPause(bool p) { m_pause = p; }
     bool isPaused() const { return m_pause; }
 
+    bool shouldPlaySound() { return m_soundTimer > 0; }
+
   private:
 
     using OpCode = uint16_t;
@@ -41,8 +43,13 @@ class Emu {
     OpCode fetchInstruction();
 
     bool m_pause = false;
+
+    struct KeyWaitInfo {
+        uint8_t m_regIdx = 0;
+        KeypadInput m_keysDownLastTick = 0;
+    };
     // if this exists we're waiting for a keypress, to be stored in vx
-    std::optional<uint8_t> m_waitingForKeypressRegIdx;
+    std::optional<KeyWaitInfo> m_waitingForKeypressRegIdx;
 
     std::array<uint8_t, 16> m_regV{};
     uint16_t m_regI = 0;
@@ -58,6 +65,13 @@ class Emu {
     chrono::steady_clock::time_point m_lastTickTime = chrono::steady_clock::now();
     chrono::nanoseconds m_timeElapsedSinceLastTimerTick = 0ns;
     chrono::nanoseconds m_timeElapsedSinceLastInstruction = 0ns;
+
+    // should saving/loading registers to memory increment regI
+    bool m_legacyMemoryIncrement = true;
+    // should shift load vy into vx first
+    bool m_legacyShift = true;
+    // should jump use v0 + _nnn offset (or newer vx + _xnn) if false
+    bool m_legacyJump = true;
 
     Display m_display{};
 };
